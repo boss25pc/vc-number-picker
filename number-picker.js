@@ -7,13 +7,18 @@ jQuery(function($){
   const $hidden  = $wrap.find('.vc-np-numbers');
   const $qty  = $form.find('input.qty');
 
-  const REFRESH_MS = 6000; // quicker board sync
-const HOLD_MS = 1200;     // skip polling ~1.2s after user click
-const INTENT_MS = 1600;   // respect local pick/unpick intent for this long
-let refreshHoldUntil = 0;
-const intent = new Map(); // n -> {picked:boolean, ts:number}
+  // Timings
+  const REFRESH_MS = 8000;  // background poll interval
+  const HOLD_MS    = 1500;  // pause polling after a user click
+  const INTENT_MS  = 2000;  // prefer local intent for this long
 
-  // --- Helpers ---
+  // Local intent + poll hold
+  let refreshHoldUntil = 0;   // timestamp until which poll is skipped
+  const intent = new Map();   // n -> { wantPicked: bool, ts: number }
+  function noteIntent(n, wantPicked){ intent.set(n, { wantPicked: !!wantPicked, ts: Date.now() }); }
+  function isIntentFresh(n){ const i = intent.get(n); return !!i && (Date.now() - i.ts) < INTENT_MS; }
+
+  // Helpers
   function getPicked(){
     return $wrap.find('.vc-cell.is-picked').map(function(){
       return parseInt($(this).data('n'),10);
@@ -31,35 +36,33 @@ const intent = new Map(); // n -> {picked:boolean, ts:number}
     syncQty();
   }
 
-  // --- Apply server state (patched to avoid "my pick becomes RES") ---
+  // Apply server state (respect recent local intent to prevent "pop-back")
   function applyState(state){
     const sold = new Set(state.sold || []);
     const res  = new Set(state.reserved || []);
-    const mineFromServer = new Set(state.mine || []);
-    const now = Date.now();
+    const mine = new Set(state.mine || []);
 
     $wrap.find('.vc-cell').each(function(){
       const $cell = $(this);
       const n = parseInt($cell.data('n'),10);
-      const seen = intent.get(n);
-      const hasIntent = seen && (now - seen.ts) < INTENT_MS;
-      const desiredPicked = hasIntent ? !!seen.picked : null;
 
       const isSold = sold.has(n);
-      let isMine = mineFromServer.has(n) || $cell.hasClass('is-picked');
-      if (hasIntent) {
-        // Respect recent local intent over server during grace window
-        isMine = desiredPicked;
+      const mineNow = mine.has(n);
+      const isResOther = res.has(n) && !mineNow && !isSold;
+
+      let nextPicked;
+      if (isIntentFresh(n)) {
+        nextPicked = intent.get(n).wantPicked;     // honor local intent briefly
+      } else {
+        nextPicked = mineNow;                      // otherwise follow server
       }
-      const isResOther = res.has(n) && !isMine && !isSold;
 
       $cell
         .toggleClass('is-sold', isSold)
         .toggleClass('is-res',  isResOther)
-        .toggleClass('is-picked', isMine);
+        .toggleClass('is-picked', nextPicked);
 
-      // Disable only if SOLD or reserved by someone else
-      const disable = isSold || isResOther;
+      const disable = isSold || isResOther;        // disable only if not pickable
       $cell.prop('disabled', disable).attr('aria-disabled', disable ? 'true' : null);
     });
 
@@ -67,55 +70,56 @@ const intent = new Map(); // n -> {picked:boolean, ts:number}
     syncQty();
   }
 
-  function refreshState(){
-    if (Date.now() < refreshHoldUntil) return;
-    if(!pid) return;
+  // Poll (with optional force bypass)
+  function refreshState(force){
+    if (!pid) return;
+    if (!force && Date.now() < refreshHoldUntil) return; // don't stomp fresh clicks
     $.post(VCNP.ajax, { action:'vc_np_state', pid, nonce:VCNP.nonce })
       .done(function(r){ if(r && r.success) applyState(r.data); });
   }
 
   // Initial sync + polling
-  refreshState();
+  refreshState(true);
   setInterval(refreshState, REFRESH_MS);
 
-  // --- Optimistic click: instant UI, then confirm with server ---
+  // Click handling: optimistic UI + server call, then forced refresh
   $wrap.on('click','.vc-cell',function(){
     const $c = $(this);
     const n = parseInt($c.data('n'),10);
     if(!pid || !n) return;
     if ($c.is('.is-sold, .is-res')) return; // blocked if sold or reserved by others
 
+    // hold background poll briefly
     refreshHoldUntil = Date.now() + HOLD_MS;
 
     if ($c.hasClass('is-picked')){
       // Optimistic unpick
+      noteIntent(n,false);
       setPicked(n,false);
-      intent.set(n,{picked:false, ts: Date.now()});
       $.post(VCNP.ajax, { action:'vc_np_release', pid, num:n, nonce:VCNP.nonce })
-        .always(refreshState);
+        .always(function(){ refreshState(true); }); // confirm server truth asap
       return;
     }
 
     // Optimistic pick
+    noteIntent(n,true);
     setPicked(n,true);
-    intent.set(n,{picked:true, ts: Date.now()});
     $.post(VCNP.ajax, { action:'vc_np_reserve', pid, num:n, nonce:VCNP.nonce })
       .done(function(r){
         if(!(r && r.success)){
           // Server refused (taken/race) -> revert
           setPicked(n,false);
           alert(VCNP.i18n?.taken || 'That number just got taken. Please pick another.');
-          refreshState();
         }
       })
       .fail(function(){
         setPicked(n,false);
         alert('Could not reserve that number.');
-        refreshState();
-      });
+      })
+      .always(function(){ refreshState(true); });   // confirm server truth asap
   });
 
-  // --- Add to cart: one line per picked number ---
+  // Add to cart: one line per picked number (unchanged)
   $form.on('submit', function(e){
     const nums = getPicked();
     if(!nums.length){ alert(VCNP.i18n?.pick || 'Please select at least one number.'); return false; }
@@ -132,14 +136,14 @@ const intent = new Map(); // n -> {picked:boolean, ts:number}
           window.location.href = dest;
         } else {
           alert((r && r.data && r.data.msg) ? r.data.msg : 'Could not add to cart.');
-          refreshState();
+          refreshState(true);
         }
       })
       .fail(function(){ alert('Could not add to cart.'); });
     return false;
   });
 
-  // --- Release my holds on navigation (prevents sticky RES after refresh) ---
+  // Release my holds on navigation
   window.addEventListener('beforeunload', function(){
     const nums = getPicked(); if(!nums.length) return;
     for (const n of nums){
