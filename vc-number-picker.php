@@ -29,3 +29,4 @@ add_action('plugins_loaded', function(){
     new VCNP_Orders();
     if (is_admin()) new VCNP_Admin_Grid_Size();
 });
+
