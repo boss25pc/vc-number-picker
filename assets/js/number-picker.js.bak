@@ -1,0 +1,57 @@
+jQuery(function($){
+  const $form = $('form.cart').first(); if(!$form.length) return;
+  const $btn  = $form.find('.single_add_to_cart_button');
+  const $wrap = $('.vc-np').first(); if(!$wrap.length) return;
+  const pid   = parseInt($wrap.data('product'),10) || 0;
+  const $hidden  = $wrap.find('.vc-np-numbers');
+  const $qty  = $form.find('input.qty');
+
+  function getPicked(){ return $wrap.find('.vc-cell.is-picked').map(function(){ return parseInt($(this).data('n'),10); }).get(); }
+  function syncQty(){ const c = getPicked().length || 1; if ($qty.length) $qty.val(c).trigger('change'); $btn.prop('disabled', getPicked().length===0); }
+
+  function applyState(state){
+    const sold = new Set(state.sold||[]);
+    const res  = new Set(state.reserved||[]);
+    $wrap.find('.vc-cell').each(function(){
+      const n = parseInt($(this).data('n'),10);
+      const isSold = sold.has(n);
+      const isRes  = res.has(n) && !isSold;
+      $(this).toggleClass('is-sold', isSold).toggleClass('is-res', isRes);
+      if (isSold || isRes) $(this).attr('aria-disabled','true').prop('disabled', true);
+      else $(this).removeAttr('aria-disabled').prop('disabled', false);
+    });
+    const mine = new Set(state.mine||[]);
+    $wrap.find('.vc-cell.is-picked').each(function(){ const n = parseInt($(this).data('n'),10); if (!mine.has(n)) $(this).removeClass('is-picked'); });
+    $hidden.val(getPicked().join(',')); syncQty();
+  }
+  function refreshState(){ if(!pid) return; $.post(VCNP.ajax, { action:'vc_np_state', pid, nonce:VCNP.nonce }).done(function(r){ if(r && r.success) applyState(r.data); }); }
+  refreshState(); setInterval(refreshState, 15000);
+
+  $wrap.on('click','.vc-cell',function(){
+    const $c = $(this); const n = parseInt($c.data('n'),10);
+    if(!pid || !n) return; if ($c.is('.is-sold, .is-res')) return;
+    if ($c.hasClass('is-picked')){
+      $.post(VCNP.ajax, { action:'vc_np_release', pid, num:n, nonce:VCNP.nonce })
+        .always(function(){ $c.removeClass('is-picked'); $hidden.val(getPicked().join(',')); syncQty(); refreshState(); });
+      return;
+    }
+    $.post(VCNP.ajax, { action:'vc_np_reserve', pid, num:n, nonce:VCNP.nonce })
+      .done(function(r){
+        if(r && r.success){ $c.addClass('is-picked'); $hidden.val(getPicked().join(',')); syncQty(); refreshState(); }
+        else { alert(VCNP.i18n.taken || 'Taken'); refreshState(); }
+      });
+  });
+
+  $form.on('submit', function(e){
+    const nums = getPicked();
+    if(!nums.length){ alert(VCNP.i18n.pick || 'Pick a number'); return false; }
+    const $skill = $wrap.find('#vc_np_skill_answer');
+    const ans = ($skill.val()||'').trim();
+    if($skill.length && !ans){ alert(VCNP.i18n.skill || 'Answer the skill question'); return false; }
+    e.preventDefault();
+    $.post(VCNP.ajax, { action:'vc_np_add_to_cart', pid, nums: nums, skill: ans, nonce:VCNP.nonce })
+      .done(function(r){ if (r && r.success) { window.location.href = r.data && r.data.cart ? r.data.cart : '/cart'; } else { alert((r && r.data && r.data.msg) ? r.data.msg : 'Could not add to cart.'); refreshState(); } })
+      .fail(function(){ alert('Could not add to cart.'); });
+    return false;
+  });
+});

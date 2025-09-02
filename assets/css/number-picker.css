@@ -1,0 +1,74 @@
+/* VC Number Picker — full stylesheet (Pro 2.0.2) */
+
+/* Variables */
+.vc-np, .vc-board, .vc-cell{
+  --vc-bg:#111827;         /* cell bg */
+  --vc-fg:#e9eef8;         /* text */
+  --vc-border:#374151;     /* border */
+  --vc-accent:#3b82f6;     /* picked outline */
+  --vc-sold-bg:#1f2937;    /* sold/res bg */
+  --vc-cell-size:54px;     /* 44–56 looks best */
+  --vc-gap:10px;
+  --vc-radius:12px;
+}
+
+/* Board layout (desktop → mobile) */
+.vc-board{
+  display:grid;
+  grid-template-columns:repeat(10,1fr);
+  gap:var(--vc-gap);
+  max-width:680px;
+}
+@media (max-width:1024px){ .vc-board{ grid-template-columns:repeat(8,1fr); } }
+@media (max-width:820px){  .vc-board{ grid-template-columns:repeat(6,1fr); } }
+@media (max-width:560px){  .vc-board{ grid-template-columns:repeat(5,1fr); } }
+
+/* Base cell button */
+.vc-cell{
+  position:relative;
+  display:flex; align-items:center; justify-content:center;
+  height:var(--vc-cell-size); width:100%;
+  background:var(--vc-bg); color:var(--vc-fg);
+  border:1px solid var(--vc-border); border-radius:var(--vc-radius);
+  font-weight:800; line-height:1; user-select:none;
+  cursor:pointer; font-variant-numeric:tabular-nums; font-feature-settings:"tnum" 1,"lnum" 1;
+  transition:filter .15s ease, box-shadow .12s ease, transform .12s ease;
+}
+.vc-cell:hover{ filter:brightness(1.06); }
+.vc-cell:disabled{ opacity:1; } /* keep colors; states handle visuals */
+
+/* Picked state (your selection) */
+.vc-cell.is-picked{
+  background:linear-gradient(180deg,#1e3a8a,#152a52);
+  border-color:#60a5fa; color:#fff;
+  box-shadow:0 0 0 2px rgba(96,165,250,.6), inset 0 0 0 1px rgba(255,255,255,.06);
+  transform:translateZ(0) scale(1.02);
+}
+.vc-cell.is-picked::before{
+  content:"✓"; position:absolute; top:4px; left:6px; font-size:12px; font-weight:900; opacity:.95;
+}
+
+/* Reserved/Sold (by others) */
+.vc-cell.is-res, .vc-cell.is-sold{
+  background:var(--vc-sold-bg); border-color:var(--vc-border);
+  color:#9ca3af; cursor:not-allowed;
+}
+
+/* Pills: top-right, tiny, never block clicks */
+.vc-cell.is-res::after,
+.vc-cell.is-sold::after{
+  position:absolute; top:4px; right:6px;
+  font-size:10px; font-weight:900;
+  padding:2px 6px; border-radius:999px;
+  pointer-events:none; opacity:.95; letter-spacing:.4px;
+  content:"";
+}
+.vc-cell.is-res::after  { content:"RES";  background:#334155; color:#e9eef8; }
+.vc-cell.is-sold::after { content:"SOLD"; background:#991b1b; color:#fff; }
+
+/* Skill box tidy */
+.vc-skill-wrap label{ display:block; margin:8px 0 4px; font-weight:700; }
+.vc-skill-wrap .vc-skill-input{
+  width:100%; padding:10px 12px; border-radius:10px;
+  background:#0f1a33; border:1px solid #2a3554; color:#e9eef8;
+}
