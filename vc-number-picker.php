@@ -2,7 +2,7 @@
 /**
  * Plugin Name: VC Number Picker (VaultComps)
  * Description: Pro number picker board for Woo Lottery products. Multi-select, 10‑minute reservations, per-number cart lines, skill question, compliance note, grid-size control (50/59/100/custom).
- * Version:     2.0.3
+ * $12.0.3
  * Author:      VaultComps
  * Requires PHP: 7.4
  * Text Domain: vcnp
@@ -29,4 +29,5 @@ add_action('plugins_loaded', function(){
     new VCNP_Orders();
     if (is_admin()) new VCNP_Admin_Grid_Size();
 });
+
 
