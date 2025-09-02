@@ -1,0 +1,50 @@
+name: Build & Attach Plugin ZIP on Release
+
+on:
+  release:
+    types: [published]  # runs when you press "Publish release"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute names
+        id: names
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          SAFE="${TAG#v}"
+          echo "TAG=$TAG"   >> $GITHUB_ENV
+          echo "SAFE=$SAFE" >> $GITHUB_ENV
+          echo "DIR=vc-number-picker" >> $GITHUB_ENV
+          echo "ZIP=vc-number-picker-v${SAFE}.zip" >> $GITHUB_ENV
+
+      - name: Prepare package folder (vc-number-picker/)
+        run: |
+          mkdir -p "$DIR"
+          rsync -a ./ "$DIR"/ \
+            --exclude ".git*" \
+            --exclude ".github" \
+            --exclude "node_modules" \
+            --exclude "dist" \
+            --exclude "tests" \
+            --exclude "*.zip" \
+            --exclude ".vscode" \
+            --exclude ".idea"
+
+      - name: Create ZIP
+        run: |
+          zip -r "$ZIP" "$DIR"
+
+      - name: Attach ZIP to the Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          files: ${{ env.ZIP }}
