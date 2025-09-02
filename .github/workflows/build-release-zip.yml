@@ -1,1 +1,44 @@
-﻿
+﻿name: Build & attach plugin ZIP
+
+on:
+  # manual run button in the Actions tab
+  workflow_dispatch:
+  # auto-run when you publish/create a GitHub Release
+  release:
+    types: [published, created]
+  # also run when you push a tag like v2.0.3
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-zip:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set names
+        run: |
+          echo "PLUGIN_SLUG=vc-number-picker" >> $GITHUB_ENV
+          echo "ZIP_NAME=vc-number-picker-${GITHUB_REF_NAME}.zip" >> $GITHUB_ENV
+
+      - name: Create release zip
+        run: |
+          git archive --format=zip \
+            --prefix="${{ env.PLUGIN_SLUG }}/" \
+            -o "${{ env.ZIP_NAME }}" \
+            HEAD
+
+      - name: Upload zip to this release (or create one for tag)
+        uses: softprops/action-gh-release@v2
+        with:
+          files: "${{ env.ZIP_NAME }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
