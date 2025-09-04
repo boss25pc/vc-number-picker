@@ -1,140 +1,227 @@
-jQuery(function($){
-  // --- Early exits / handles ---
-  const $form = $('form.cart').first(); if(!$form.length) return;
-  const $btn  = $form.find('.single_add_to_cart_button');
-  const $wrap = $('.vc-np').first(); if(!$wrap.length) return;
-  const pid   = parseInt($wrap.data('product'),10) || 0;
-  const $hidden  = $wrap.find('.vc-np-numbers');
-  const $qty  = $form.find('input.qty');
+/* VC Number Picker ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â stable click + live label
+   - Unpick guard prevents poll from re-picking just-unpicked tiles
+   - Button shows "Add X Entries" and disables at 0
+   - Single, namespaced click handler
+*/
+(function () {
+  if (!window.jQuery) { return; }
+  jQuery(function ($) {
+    var $wrap = $('.vc-np').first();
+    if (!$wrap.length) { return; }
 
-  const REFRESH_MS = 6000; // quicker board sync
+    var pid = parseInt($wrap.data('product'), 10) || 0;
+    if (!pid) { return; }
 
-  // --- Helpers ---
-  function getPicked(){
-    return $wrap.find('.vc-cell.is-picked').map(function(){
-      return parseInt($(this).data('n'),10);
-    }).get();
-  }
-  function syncQty(){
-    const c = getPicked().length || 1;
-    if ($qty.length) $qty.val(c).trigger('change');
-    $btn.prop('disabled', getPicked().length===0);
-  }
-  function setPicked(n, on){
-    const $c = $wrap.find('.vc-cell[data-n="'+n+'"]');
-    $c.toggleClass('is-picked', !!on);
-    $hidden.val(getPicked().join(','));
-    syncQty();
-  }
+    var ajax = (window.VCNP && VCNP.ajax) || window.ajaxurl || '';
+    var nonce = (window.VCNP && VCNP.nonce) || (function () {
+      var m = document.querySelector('meta[name="vcnp-nonce"]');
+      return m ? m.getAttribute('content') : '';
+    })();
+    if (!ajax || !nonce) { return; }
 
-  // --- Apply server state (patched to avoid "my pick becomes RES") ---
-  function applyState(state){
-    const sold = new Set(state.sold || []);
-    const res  = new Set(state.reserved || []);
-    const mineFromServer = new Set(state.mine || []);
+    var $form = $('form.cart').first();
+    var $btn = $form.find('.single_add_to_cart_button');
+    var $qty = $form.find('input.qty');
+    var $hidden = $wrap.find('.vc-np-numbers');
 
-    $wrap.find('.vc-cell').each(function(){
-      const $cell = $(this);
-      const n = parseInt($cell.data('n'),10);
+    var REFRESH_MS = 3000;
+    var UNPICK_GUARD_MS = 800;
+    var CLICK_DEBOUNCE_MS = 80;
+    var AFTER_CLICK_REFRESH_MS = 150;
 
-      const isSold = sold.has(n);
-      // Treat current UI picks as "mine" during reconciliation to avoid race on refresh
-      const isMine = mineFromServer.has(n) || $cell.hasClass('is-picked');
-      const isResOther = res.has(n) && !isMine && !isSold;
+    var lastClickTs = 0;
+    var unpickGuard = {}; // n -> ts
 
-      $cell
-        .toggleClass('is-sold', isSold)
-        .toggleClass('is-res',  isResOther)
-        .toggleClass('is-picked', isMine);
+    function getPicked() {
+      var out = [];
+      $wrap.find('.vc-cell.is-picked').each(function () {
+        out.push(parseInt($(this).data('n'), 10));
+      });
+      return out;
+    }
 
-      // Disable only if SOLD or reserved by someone else
-      const disable = isSold || isResOther;
-      $cell.prop('disabled', disable).attr('aria-disabled', disable ? 'true' : null);
+    function setPicked(n, on) {
+      var $c = $wrap.find('.vc-cell[data-n="' + n + '"]');
+      $c.toggleClass('is-picked', !!on);
+      if (on) { $c.removeClass('is-res'); }
+
+      var nums = getPicked();
+      $hidden.val(nums.join(','));
+      if ($qty.length) { $qty.val(nums.length).trigger('change'); }
+
+      var base = $btn.data('vcnpBase');
+      if (!base) { base = $.trim($btn.text()) || 'Add to cart'; $btn.data('vcnpBase', base); }
+      var label = nums.length ? ('Add ' + nums.length + ' Entries') : base;
+      $btn.text(label).prop('disabled', nums.length === 0);
+    }
+
+    function post(data) {
+      data = data || {};
+      data.pid = pid;
+      data.nonce = nonce;
+      return $.post(ajax, data);
+    }
+
+    function applyState(data) {
+      if (!data) { return; }
+      var sold = {}, res = {}, mine = {};
+      var i, arr;
+
+      arr = data.sold || [];
+      for (i = 0; i < arr.length; i++) { sold[arr[i]] = 1; }
+      arr = data.reserved || [];
+      for (i = 0; i < arr.length; i++) { res[arr[i]] = 1; }
+      arr = data.mine || [];
+      for (i = 0; i < arr.length; i++) { mine[arr[i]] = 1; }
+
+      var now = Date.now();
+
+      $wrap.find('.vc-cell').each(function () {
+        var $c = $(this);
+        var n = parseInt($c.data('n'), 10);
+
+        var guardTs = unpickGuard[n] || 0;
+        var guardActive = (now - guardTs) < UNPICK_GUARD_MS;
+
+        var isSold = !!sold[n];
+        // Local intent wins briefly after an unpick
+        var isMine = guardActive ? false : (!!mine[n] || $c.hasClass('is-picked'));
+        var isResOther = !!res[n] && !isMine && !isSold;
+
+        $c.toggleClass('is-sold', isSold)
+          .toggleClass('is-res', isResOther)
+          .toggleClass('is-picked', isMine);
+      });
+
+      // sync hidden/qty/button
+      var nums = getPicked();
+      $hidden.val(nums.join(','));
+      if ($qty.length) { $qty.val(nums.length); }
+      var base = $btn.data('vcnpBase');
+      if (!base) { base = $.trim($btn.text()) || 'Add to cart'; $btn.data('vcnpBase', base); }
+      var label = nums.length ? ('Add ' + nums.length + ' Entries') : base;
+      $btn.text(label).prop('disabled', nums.length === 0);
+    }
+
+    function refresh() {
+      post({ action: 'vc_np_state' }).done(function (r) {
+        if (r && r.success && r.data) { applyState(r.data); }
+      });
+    }
+
+    // One clean, namespaced handler
+    $wrap.off('click.vcnp').on('click.vcnp', '.vc-cell', function (e) {
+      e.preventDefault();
+      var now = Date.now();
+      if (now - lastClickTs < CLICK_DEBOUNCE_MS) { return; }
+      lastClickTs = now;
+
+      var $c = $(this);
+      var n = parseInt($c.data('n'), 10);
+      if (!n || $c.hasClass('is-sold')) { return; }
+
+      // Unpick
+      if ($c.hasClass('is-picked')) {
+        setPicked(n, false);
+        unpickGuard[n] = now;
+        post({ action: 'vc_np_release', num: n }).always(function () {
+          setTimeout(refresh, AFTER_CLICK_REFRESH_MS);
+        });
+        return;
+      }
+      // DonÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢t fight someone elseÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢s hold
+      if ($c.hasClass('is-res')) { return; }
+
+      // Pick
+      setPicked(n, true);
+      post({ action: 'vc_np_reserve', num: n }).done(function (r) {
+        if (!(r && r.success)) { setPicked(n, false); }
+      }).always(function () {
+        setTimeout(refresh, AFTER_CLICK_REFRESH_MS);
+      });
     });
 
-    $hidden.val(getPicked().join(','));
-    syncQty();
-  }
+    // Initial sync + poll
+    refresh();
+    setInterval(refresh, REFRESH_MS);
+  });
+})();
 
-  function refreshState(){
-    if(!pid) return;
-    $.post(VCNP.ajax, { action:'vc_np_state', pid, nonce:VCNP.nonce })
-      .done(function(r){ if(r && r.success) applyState(r.data); });
-  }
 
-  // Initial sync + polling
-  refreshState();
-  setInterval(refreshState, REFRESH_MS);
 
-  // --- Optimistic click: instant UI, then confirm with server ---
-  $wrap.on('click','.vc-cell',function(){
-    const $c = $(this);
-    const n = parseInt($c.data('n'),10);
-    if(!pid || !n) return;
-    if ($c.is('.is-sold, .is-res')) return; // blocked if sold or reserved by others
 
-    if ($c.hasClass('is-picked')){
-      // Optimistic unpick
-      setPicked(n,false);
-      $.post(VCNP.ajax, { action:'vc_np_release', pid, num:n, nonce:VCNP.nonce })
-        .always(refreshState);
-      return;
+
+
+
+
+
+/* vcnp cta hook v5.1 (decorates updateCta; honors VCNP.settings) */
+(function(){
+  if (!window.jQuery) return;
+  jQuery(function($){
+    var $wrap = $('.vc-np').first(); if(!$wrap.length) return;
+    var $form = $('form.cart').first();
+    var $btn  = $form.find('.single_add_to_cart_button'); if(!$btn.length) return;
+
+    var cfg  = (window.VCNP && VCNP.settings) || {};
+    var BASE = (typeof CTA_BASE !== 'undefined' && CTA_BASE) ? CTA_BASE : ($btn.text() || 'Participate now');
+    var showTotal = (cfg.show_total !== false);
+    var unit = (typeof cfg.unit_price === 'number' && cfg.unit_price>0) ? cfg.unit_price : NaN;
+    var sym  = cfg.currency_symbol || '£';
+    var pending=false;
+
+    function parseMoney(txt){
+      var m = (txt||'').replace(/\s+/g,'').match(/([£$€])?([\d.,]+)/); if(!m) return NaN;
+      if(!sym) sym = m[1] || '£';
+      var s = m[2], dot=s.lastIndexOf('.'), comma=s.lastIndexOf(',');
+      var dec = dot>comma ? '.' : ',', th = dec==='.' ? /,/g : /\./g;
+      s = s.replace(th,'').replace(dec,'.'); var v = parseFloat(s);
+      return isFinite(v) ? v : NaN;
     }
-
-    // Optimistic pick
-    setPicked(n,true);
-    $.post(VCNP.ajax, { action:'vc_np_reserve', pid, num:n, nonce:VCNP.nonce })
-      .done(function(r){
-        if(!(r && r.success)){
-          // Server refused (taken/race) -> revert
-          setPicked(n,false);
-          alert(VCNP.i18n?.taken || 'That number just got taken. Please pick another.');
-          refreshState();
-        }
-      })
-      .fail(function(){
-        setPicked(n,false);
-        alert('Could not reserve that number.');
-        refreshState();
-      });
-  });
-
-  // --- Add to cart: one line per picked number ---
-  $form.on('submit', function(e){
-    const nums = getPicked();
-    if(!nums.length){ alert(VCNP.i18n?.pick || 'Please select at least one number.'); return false; }
-
-    const $skill = $wrap.find('#vc_np_skill_answer');
-    const ans = ($skill.val()||'').trim();
-    if($skill.length && !ans){ alert(VCNP.i18n?.skill || 'Please answer the skill question.'); return false; }
-
-    e.preventDefault();
-    $.post(VCNP.ajax, { action:'vc_np_add_to_cart', pid, nums: nums, skill: ans, nonce:VCNP.nonce })
-      .done(function(r){
-        if (r && r.success) {
-          const dest = (r.data && r.data.cart) ? r.data.cart : '/cart';
-          window.location.href = dest;
-        } else {
-          alert((r && r.data && r.data.msg) ? r.data.msg : 'Could not add to cart.');
-          refreshState();
-        }
-      })
-      .fail(function(){ alert('Could not add to cart.'); });
-    return false;
-  });
-
-  // --- Release my holds on navigation (prevents sticky RES after refresh) ---
-  window.addEventListener('beforeunload', function(){
-    const nums = getPicked(); if(!nums.length) return;
-    for (const n of nums){
+    function detectUnit(){
+      if (isFinite(unit)) return;
+      var wrap = document.querySelector('.entry-summary .price, .summary .price, .product .summary .price, .product .price');
+      if (wrap){
+        var cand = wrap.querySelector('ins .woocommerce-Price-amount, .woocommerce-Price-amount, .amount');
+        if(cand){ var v=parseMoney(cand.textContent); if(isFinite(v)){ unit=v; return; } }
+      }
+      var list = document.querySelectorAll('.entry-summary .price .woocommerce-Price-amount, .summary .price .woocommerce-Price-amount, .woocommerce-Price-amount, .amount');
+      for (var i=0;i<list.length;i++){ var v2=parseMoney(list[i].textContent); if(isFinite(v2)){ unit=v2; return; } }
+      var h1 = document.querySelector('h1.product_title, .product_title.entry-title, .entry-title');
+      if (h1){ var v3=parseMoney(h1.textContent); if(isFinite(v3)){ unit=v3; return; } }
+    }
+    function fmt(n){
       try{
-        const fd = new FormData();
-        fd.append('action','vc_np_release');
-        fd.append('pid', String(pid));
-        fd.append('num', String(n));
-        fd.append('nonce', VCNP.nonce);
-        if (navigator.sendBeacon) navigator.sendBeacon(VCNP.ajax, fd);
-      }catch(e){ /* ignore */ }
+        var code=(window.wc_price_params&&wc_price_params.currency_code)||(cfg.currency||'');
+        if(window.Intl && code) return new Intl.NumberFormat(document.documentElement.lang||'en-GB',{style:'currency',currency:code}).format(n);
+      }catch(e){}
+      return (sym||'£') + n.toFixed(2);
     }
+    function countPicked(){ return $wrap.find('.vc-cell.is-picked').length; }
+    function refreshCta(){
+      var n = countPicked();
+      var label = BASE;
+      if (n>0){
+        var extra = '';
+        if (showTotal){
+          detectUnit();
+          if(isFinite(unit)) extra = ' ('+fmt(n*unit)+')';
+        }
+        label = 'Add ' + n + ' ' + (n===1?'Entry':'Entries') + extra;
+      }
+      $btn.text(label);
+    }
+    function schedule(){ if(pending) return; pending=true; setTimeout(function(){ pending=false; refreshCta(); }, 0); }
+
+    if (typeof window.updateCta === 'function'){
+      var __old = window.updateCta;
+      window.updateCta = function(c){ try{ __old(c); } finally { schedule(); } };
+    }
+
+    var mo = new MutationObserver(schedule);
+    mo.observe($wrap[0], {subtree:true, attributes:true, attributeFilter:['class']});
+    $form.on('change input','input.qty', schedule);
+    jQuery(document).on('ajaxComplete', function(){ schedule(); });
+    refreshCta();
   });
-});
+})();
